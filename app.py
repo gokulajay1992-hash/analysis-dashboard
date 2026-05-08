@@ -6,6 +6,7 @@ from dash import dcc, html, dash_table, Input, Output, State
 import dash_bootstrap_components as dbc
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from classifier import classify_dataframe
 
@@ -201,23 +202,57 @@ def render_summary(data):
         .sort_values('Count', ascending=False)
     )
 
-    fig = go.Figure(go.Bar(
-        x=cat_df['Category'],
-        y=cat_df['Count'],
-        text=cat_df['Count'],
-        textposition='outside',
-        marker_color=[CATEGORY_COLORS.get(c, '#95a5a6') for c in cat_df['Category']],
-        customdata=cat_df['Qty_Updated'],
-        hovertemplate='<b>%{x}</b><br>Count: %{y:,}<br>Qty Updated: %{customdata:,}<extra></extra>',
-    ))
-    fig.update_layout(
-        title='Click a category bar to drill down',
-        yaxis_title='Count', xaxis_title='',
-        plot_bgcolor='white', paper_bgcolor='white',
-        height=400, showlegend=False,
-        margin=dict(t=50, b=20, l=40, r=20),
+    cat_sorted = cat_df.sort_values('Count', ascending=True)
+    colors = [CATEGORY_COLORS.get(c, '#95a5a6') for c in cat_sorted['Category']]
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        column_widths=[0.62, 0.38],
+        specs=[[{'type': 'bar'}, {'type': 'pie'}]],
+        subplot_titles=('Click a bar to drill down', 'Share by Category'),
     )
-    fig.update_yaxes(showgrid=True, gridcolor='#f0f0f0')
+
+    fig.add_trace(go.Bar(
+        y=cat_sorted['Category'],
+        x=cat_sorted['Count'],
+        orientation='h',
+        marker=dict(
+            color=colors,
+            line=dict(color='white', width=1),
+        ),
+        text=[f'  {v:,}' for v in cat_sorted['Count']],
+        textposition='outside',
+        customdata=cat_sorted['Qty_Updated'],
+        hovertemplate='<b>%{y}</b><br>Count: %{x:,}<br>Qty Updated: %{customdata:,}<extra></extra>',
+        name='',
+    ), row=1, col=1)
+
+    fig.add_trace(go.Pie(
+        labels=cat_df['Category'],
+        values=cat_df['Count'],
+        hole=0.52,
+        marker=dict(
+            colors=[CATEGORY_COLORS.get(c, '#95a5a6') for c in cat_df['Category']],
+            line=dict(color='white', width=2),
+        ),
+        textinfo='percent',
+        hovertemplate='<b>%{label}</b><br>Count: %{value:,}<br>Share: %{percent}<extra></extra>',
+        showlegend=True,
+    ), row=1, col=2)
+
+    fig.update_layout(
+        plot_bgcolor='white', paper_bgcolor='white',
+        height=420, showlegend=True,
+        margin=dict(t=50, b=10, l=10, r=10),
+        legend=dict(
+            orientation='v', x=0.64, y=0.5,
+            font=dict(size=11),
+            bgcolor='rgba(0,0,0,0)',
+        ),
+        font=dict(family='Segoe UI, sans-serif', size=12),
+    )
+    fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0', zeroline=False, row=1, col=1)
+    fig.update_yaxes(showgrid=False, row=1, col=1)
 
     # Overall export button
     chart_card = dbc.Card([
@@ -274,23 +309,38 @@ def drill_down(click_data, data):
         if category == 'Obsolete Drug':
             sub_df.loc[sub_df['Sub Category'] == 'Not Substituted', 'Qty_Updated'] = 0
 
-        sub_fig = go.Figure(go.Bar(
-            x=sub_df['Sub Category'],
-            y=sub_df['Count'],
-            text=sub_df['Count'],
+        sub_sorted = sub_df.sort_values('Count', ascending=True)
+
+        sub_fig = go.Figure()
+        sub_fig.add_trace(go.Bar(
+            y=sub_sorted['Sub Category'],
+            x=sub_sorted['Count'],
+            orientation='h',
+            name='Total',
+            marker=dict(color='#3498db', line=dict(color='white', width=1)),
+            text=[f'  {v:,}' for v in sub_sorted['Count']],
             textposition='outside',
-            marker_color='#3498db',
-            customdata=sub_df['Qty_Updated'],
-            hovertemplate='<b>%{x}</b><br>Count: %{y:,}<br>Qty Updated: %{customdata:,}<extra></extra>',
+            hovertemplate='<b>%{y}</b><br>Total: %{x:,}<extra></extra>',
+        ))
+        sub_fig.add_trace(go.Bar(
+            y=sub_sorted['Sub Category'],
+            x=sub_sorted['Qty_Updated'],
+            orientation='h',
+            name='Qty Updated',
+            marker=dict(color='#27ae60', line=dict(color='white', width=1)),
+            hovertemplate='<b>%{y}</b><br>Qty Updated: %{x:,}<extra></extra>',
         ))
         sub_fig.update_layout(
-            title=f'{category} — Sub-category Breakdown',
-            yaxis_title='Count', xaxis_title='',
+            title=dict(text=f'{category} — Sub-category Breakdown', font=dict(size=14)),
+            barmode='overlay',
             plot_bgcolor='white', paper_bgcolor='white',
-            height=350, showlegend=False,
-            margin=dict(t=50, b=20, l=40, r=20),
+            height=max(300, len(sub_df) * 55 + 80),
+            legend=dict(orientation='h', x=0, y=1.12, font=dict(size=11)),
+            margin=dict(t=70, b=10, l=10, r=80),
+            font=dict(family='Segoe UI, sans-serif', size=12),
         )
-        sub_fig.update_yaxes(showgrid=True, gridcolor='#f0f0f0')
+        sub_fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0', zeroline=False)
+        sub_fig.update_yaxes(showgrid=False)
 
         drilldown_section = dbc.Card(
             dbc.CardBody(dcc.Graph(figure=sub_fig, config={'displayModeBar': False})),
