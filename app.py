@@ -305,17 +305,7 @@ def drill_down(click_data, data):
     )
 
     table_section = dbc.Card([
-        dbc.CardHeader(dbc.Row([
-            dbc.Col(
-                html.B(f'{category} — {len(filtered):,} records'),
-                width=8, className='my-auto',
-            ),
-            dbc.Col(
-                dbc.Button('Export this view to Excel', id='btn-export-view',
-                           color='success', size='sm'),
-                width=4, className='text-end',
-            ),
-        ])),
+        dbc.CardHeader(html.B(f'{category} — {len(filtered):,} records')),
         dbc.CardBody(
             dash_table.DataTable(
                 data=table_df.to_dict('records'),
@@ -340,22 +330,6 @@ def drill_down(click_data, data):
 
     return drilldown_section, table_section
 
-
-@app.callback(
-    Output('dl-results', 'data', allow_duplicate=True),
-    Input('btn-export-view', 'n_clicks'),
-    State('stored-data', 'data'),
-    State('cat-chart', 'clickData'),
-    prevent_initial_call=True,
-)
-def export_view(_, data, click_data):
-    if not data or not click_data:
-        return None
-    df = pd.read_json(io.StringIO(data), orient='split')
-    category = click_data['points'][0]['x']
-    filtered = df[df['Category'] == category]
-    filename = f'analysis_{category.replace(" ", "_").replace("(", "").replace(")", "")}.xlsx'
-    return dcc.send_bytes(make_export_excel(filtered), filename)
 
 
 if __name__ == '__main__':
