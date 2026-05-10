@@ -1,12 +1,12 @@
 import base64
 import io
+import random
 
 import dash
-from dash import dcc, html, dash_table, Input, Output, State
+from dash import dcc, html, dash_table, Input, Output, State, ALL, ctx
 import dash_bootstrap_components as dbc
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 from classifier import classify_dataframe
 
@@ -22,31 +22,127 @@ CATEGORY_COLORS = {
     'Obsolete Drug': '#e67e22',
     'Claims Substitution': '#3498db',
     'NDC Substituted (Drug Alt Service)': '#27ae60',
+    'Qty Updated': '#9b59b6',
     'Unclassified': '#95a5a6',
 }
 
-SAMPLE_DATA = [
-    ['REF001', 'CASE001', '200',
-     '[{"MessageDesc":"DrugandClaimsSubstitutionWrapper_ACB : GCN in Exclusion List 25200"}]'],
-    ['REF002', 'CASE002', '1302',
-     '[{"MessageDesc":"Requested NDC: 12345678901 is Obsolete"},{"MessageDesc":"No drug Alternatives were found for the NDC"}]'],
-    ['REF003', 'CASE003', '200',
-     '[{"MessageDesc":"Requested NDC: 12345678901 is Obsolete"},{"MessageDesc":"Requested NDC: 12345678901 Substituted with Alternate NDC: 98765432101 For DAW Code: 1 Drug Source: W Substitution Indicator: B"},{"MessageDesc":"Qty has been changed from: 30 to: 30"}]'],
-    ['REF004', 'CASE004', '200',
-     '[{"MessageDesc":"GetClaimsData_ACB STEP:8 Original Drug: 47781085289 has been switched to CLAIM NDC: 00548232100, Claim Drug Source: Y"}]'],
-    ['REF005', 'CASE005', '200',
-     '[{"MessageDesc":"Requested NDC: 58406002104 Substituted with Alternate NDC: 58406002101 For DAW Code: 1 Drug Source: W Substitution Indicator: B"},{"MessageDesc":"Qty has been changed from: 26 to: 26"}]'],
-    ['REF006', 'CASE006', '200',
-     '[{"MessageDesc":"Requested NDC: 78206013802 Substituted with Alternate NDC: 78206013801 For DAW Code: 0 Drug Source: X Substitution Indicator: G"}]'],
-    ['REF007', 'CASE007', '200',
-     '[{"MessageDesc":"Requested NDC: 69654058030 Substituted with Alternate NDC: 00115173701 For DAW Code: 0 Drug Source: X Substitution Indicator: G"},{"MessageDesc":"Qty has been changed from: 10 to: 15"}]'],
+BASE_CATS = [
+    'Exclusion List',
+    'Obsolete Drug',
+    'Claims Substitution',
+    'NDC Substituted (Drug Alt Service)',
 ]
 
+TILE_LABELS = {
+    'Exclusion List': 'Exclusion List',
+    'Obsolete Drug': 'Obsolete Drug',
+    'Claims Substitution': 'Claims Substitution',
+    'NDC Substituted (Drug Alt Service)': 'NDC Substituted',
+    'Qty Updated': 'Qty Updated',
+}
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+def make_tile(category, count):
+    color = CATEGORY_COLORS.get(category, '#95a5a6')
+    label = TILE_LABELS.get(category, category)
+    return dbc.Col(
+        html.Div(
+            [
+                html.P(label, className='mb-1 fw-semibold',
+                       style={'fontSize': '13px', 'color': '#555', 'lineHeight': '1.3'}),
+                html.H2(f'{count:,}', className='mb-0 fw-bold', style={'color': color}),
+                html.Small('records', style={'color': '#aaa', 'fontSize': '11px'}),
+            ],
+            id={'type': 'cat-tile', 'index': category},
+            n_clicks=0,
+            style={
+                'borderTop': f'5px solid {color}',
+                'borderRadius': '6px',
+                'cursor': 'pointer',
+                'background': 'white',
+                'boxShadow': '0 2px 8px rgba(0,0,0,0.08)',
+                'padding': '20px 10px',
+                'textAlign': 'center',
+            },
+        ),
+        width=True,
+    )
+
+def _rnd_ndc():
+    return ''.join([str(random.randint(0, 9)) for _ in range(11)])
+
+def _msg(*descs):
+    parts = ','.join(f'{{"MessageDesc":"{d}"}}' for d in descs)
+    return f'[{parts}]'
+
+def _qty_msg():
+    q = random.randint(10, 90)
+    return f'Qty has been changed from: {q} to: {q}'
+
 def make_sample_excel() -> bytes:
-    df = pd.DataFrame(SAMPLE_DATA, columns=['Reference ID', 'Case ID', 'StatusID', 'LogTXT'])
+    random.seed(42)
+    rows = []
+    n = 1
+
+    def row(status, log):
+        nonlocal n
+        r = [f'REF{n:04d}', f'CASE{n:04d}', status, log]
+        n += 1
+        return r
+
+    # 1. Exclusion List — 15 rows (alternating GCN 25200 / 94200)
+    for i in range(15):
+        gcn = 25200 if i % 2 == 0 else 94200
+        rows.append(row('200', _msg(
+            f'DrugandClaimsSubstitutionWrapper_ACB : GCN in Exclusion List {gcn}'
+        )))
+
+    # 2. Obsolete Drug — Not Substituted — 15 rows
+    for _ in range(15):
+        rows.append(row('1302', _msg(
+            f'Requested NDC: {_rnd_ndc()} is Obsolete',
+            'No drug Alternatives were found for the NDC',
+        )))
+
+    # 3. Obsolete Drug — Substituted — 15 rows (every 3rd has qty)
+    for i in range(15):
+        ndc, alt = _rnd_ndc(), _rnd_ndc()
+        descs = [
+            f'Requested NDC: {ndc} is Obsolete',
+            f'Requested NDC: {ndc} Substituted with Alternate NDC: {alt} '
+            f'For DAW Code: {random.randint(0,1)} Drug Source: {random.choice(["W","X"])} Substitution Indicator: B',
+        ]
+        if i % 3 == 0:
+            descs.append(_qty_msg())
+        rows.append(row('200', _msg(*descs)))
+
+    # 4. Claims Substitution — 15 rows (every 3rd has qty)
+    for i in range(15):
+        orig, claim = _rnd_ndc(), _rnd_ndc()
+        descs = [
+            f'GetClaimsData_ACB STEP:8 Original Drug: {orig} has been switched to '
+            f'CLAIM NDC: {claim}, Claim Drug Source: Y',
+        ]
+        if i % 3 == 0:
+            descs.append(_qty_msg())
+        rows.append(row('200', _msg(*descs)))
+
+    # 5. NDC Substituted — 6 sub-types × 10 rows each = 60 rows (every 3rd has qty)
+    for daw in ['0', '1']:
+        for src in ['W', 'X', 'Y']:
+            for i in range(10):
+                ndc, alt = _rnd_ndc(), _rnd_ndc()
+                descs = [
+                    f'Requested NDC: {ndc} Substituted with Alternate NDC: {alt} '
+                    f'For DAW Code: {daw} Drug Source: {src} Substitution Indicator: B',
+                ]
+                if i % 3 == 0:
+                    descs.append(_qty_msg())
+                rows.append(row('200', _msg(*descs)))
+
+    # Total: 15+15+15+15+60 = 120 rows
+    df = pd.DataFrame(rows, columns=['Reference ID', 'Case ID', 'StatusID', 'LogTXT'])
     buf = io.BytesIO()
     df.to_excel(buf, index=False)
     buf.seek(0)
@@ -195,68 +291,52 @@ def render_summary(data):
         dbc.Col(stat_card('Qty Updated (all)', f'{qty_total:,}', 'info'), width=3),
     ], className='g-3')
 
-    cat_df = (
-        df.groupby('Category')
-        .agg(Count=('Category', 'count'), Qty_Updated=('Qty Updated', 'sum'))
-        .reset_index()
-        .sort_values('Count', ascending=False)
+    # Build 5-row chart: 4 base categories + Qty Updated
+    base_df = (
+        df[df['Category'].isin(BASE_CATS)]
+        .groupby('Category')
+        .size()
+        .reset_index(name='Count')
+    )
+    qty_total = int(df['Qty Updated'].sum())
+    qty_row = pd.DataFrame([{'Category': 'Qty Updated', 'Count': qty_total}])
+    cat_df = pd.concat([base_df, qty_row], ignore_index=True)
+
+    # Tiles row
+    tiles = dbc.Row(
+        [make_tile(cat, cnt) for cat, cnt in zip(cat_df['Category'], cat_df['Count'])],
+        className='g-3 mb-4',
     )
 
-    cat_sorted = cat_df.sort_values('Count', ascending=True)
-    colors = [CATEGORY_COLORS.get(c, '#95a5a6') for c in cat_sorted['Category']]
-
-    fig = make_subplots(
-        rows=1, cols=2,
-        column_widths=[0.62, 0.38],
-        specs=[[{'type': 'bar'}, {'type': 'pie'}]],
-        subplot_titles=('Click a bar to drill down', 'Share by Category'),
-    )
-
-    fig.add_trace(go.Bar(
-        y=cat_sorted['Category'],
-        x=cat_sorted['Count'],
-        orientation='h',
-        marker=dict(
-            color=colors,
-            line=dict(color='white', width=1),
-        ),
-        text=[f'  {v:,}' for v in cat_sorted['Count']],
-        textposition='outside',
-        customdata=cat_sorted['Qty_Updated'],
-        hovertemplate='<b>%{y}</b><br>Count: %{x:,}<br>Qty Updated: %{customdata:,}<extra></extra>',
-        name='',
-    ), row=1, col=1)
-
-    fig.add_trace(go.Pie(
-        labels=cat_df['Category'],
+    # Donut chart
+    donut_fig = go.Figure(go.Pie(
+        labels=[TILE_LABELS.get(c, c) for c in cat_df['Category']],
         values=cat_df['Count'],
-        hole=0.52,
+        hole=0.55,
         marker=dict(
             colors=[CATEGORY_COLORS.get(c, '#95a5a6') for c in cat_df['Category']],
-            line=dict(color='white', width=2),
+            line=dict(color='white', width=3),
         ),
-        textinfo='percent',
+        textinfo='label+percent',
+        textfont=dict(size=12),
         hovertemplate='<b>%{label}</b><br>Count: %{value:,}<br>Share: %{percent}<extra></extra>',
-        showlegend=True,
-    ), row=1, col=2)
-
-    fig.update_layout(
+        showlegend=False,
+    ))
+    donut_fig.update_layout(
         plot_bgcolor='white', paper_bgcolor='white',
-        height=420, showlegend=True,
-        margin=dict(t=50, b=10, l=10, r=10),
-        legend=dict(
-            orientation='v', x=0.64, y=0.5,
-            font=dict(size=11),
-            bgcolor='rgba(0,0,0,0)',
-        ),
+        height=360,
+        margin=dict(t=20, b=20, l=20, r=20),
         font=dict(family='Segoe UI, sans-serif', size=12),
+        annotations=[dict(
+            text=f'<b>{len(df):,}</b><br>Total', x=0.5, y=0.5,
+            font=dict(size=16, color='#333'), showarrow=False,
+        )],
     )
-    fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0', zeroline=False, row=1, col=1)
-    fig.update_yaxes(showgrid=False, row=1, col=1)
 
-    # Overall export button
-    chart_card = dbc.Card([
-        dbc.CardBody(dcc.Graph(id='cat-chart', figure=fig, config={'displayModeBar': False})),
+    donut_card = dbc.Card([
+        dbc.CardBody(
+            dcc.Graph(id='donut-chart', figure=donut_fig, config={'displayModeBar': False}),
+        ),
         dbc.CardFooter(
             dbc.Button('Export ALL Results to Excel', id='btn-export-all',
                        color='success', size='sm', outline=True),
@@ -264,7 +344,7 @@ def render_summary(data):
         ),
     ], className='shadow-sm')
 
-    return cards, chart_card
+    return cards, html.Div([tiles, donut_card])
 
 
 @app.callback(
@@ -273,8 +353,8 @@ def render_summary(data):
     State('stored-data', 'data'),
     prevent_initial_call=True,
 )
-def export_all(_, data):
-    if not data:
+def export_all(n_clicks, data):
+    if not n_clicks or not data:
         return None
     df = pd.read_json(io.StringIO(data), orient='split')
     return dcc.send_bytes(make_export_excel(df), 'analysis_results_all.xlsx')
@@ -283,29 +363,48 @@ def export_all(_, data):
 @app.callback(
     Output('drilldown-chart', 'children'),
     Output('table-section', 'children'),
-    Input('cat-chart', 'clickData'),
+    Input({'type': 'cat-tile', 'index': ALL}, 'n_clicks'),
+    Input('donut-chart', 'clickData'),
     State('stored-data', 'data'),
     prevent_initial_call=True,
 )
-def drill_down(click_data, data):
-    if not click_data or not data:
+def drill_down(tile_clicks, donut_click, data):
+    if not data:
+        return '', ''
+
+    trigger = ctx.triggered_id
+    if trigger is None:
+        return '', ''
+
+    if isinstance(trigger, dict) and trigger.get('type') == 'cat-tile':
+        category = trigger['index']
+    elif trigger == 'donut-chart' and donut_click:
+        point = donut_click['points'][0]
+        label = point.get('label', '')
+        # map short label back to full category key
+        category = next((k for k, v in TILE_LABELS.items() if v == label), label)
+    else:
+        return '', ''
+
+    if not category:
         return '', ''
 
     df = pd.read_json(io.StringIO(data), orient='split')
-    category = click_data['points'][0]['x']
-    filtered = df[df['Category'] == category].copy()
+
+    # Qty Updated is a virtual category — filter on flag, not on Category column
+    if category == 'Qty Updated':
+        filtered = df[df['Qty Updated'].isin([True, 1])].copy()
+    else:
+        filtered = df[df['Category'] == category].copy()
 
     drilldown_section = ''
 
-    # Sub-category chart for Obsolete Drug and NDC Substituted
     if category in ('Obsolete Drug', 'NDC Substituted (Drug Alt Service)'):
         sub_df = (
             filtered.groupby('Sub Category', dropna=False)
             .agg(Count=('Sub Category', 'count'), Qty_Updated=('Qty Updated', 'sum'))
             .reset_index()
-            .sort_values('Count', ascending=False)
         )
-        # Obsolete / Not Substituted — no qty tracking
         if category == 'Obsolete Drug':
             sub_df.loc[sub_df['Sub Category'] == 'Not Substituted', 'Qty_Updated'] = 0
 
@@ -341,9 +440,38 @@ def drill_down(click_data, data):
         )
         sub_fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0', zeroline=False)
         sub_fig.update_yaxes(showgrid=False)
-
         drilldown_section = dbc.Card(
             dbc.CardBody(dcc.Graph(figure=sub_fig, config={'displayModeBar': False})),
+            className='shadow-sm',
+        )
+
+    elif category == 'Qty Updated':
+        qty_breakdown = (
+            filtered.groupby('Category').size().reset_index(name='Count')
+            .sort_values('Count', ascending=True)
+        )
+        qty_colors = [CATEGORY_COLORS.get(c, '#95a5a6') for c in qty_breakdown['Category']]
+        qty_fig = go.Figure(go.Bar(
+            y=qty_breakdown['Category'],
+            x=qty_breakdown['Count'],
+            orientation='h',
+            marker=dict(color=qty_colors, line=dict(color='white', width=1)),
+            text=[f'  {v:,}' for v in qty_breakdown['Count']],
+            textposition='outside',
+            hovertemplate='<b>%{y}</b><br>Qty Updated: %{x:,}<extra></extra>',
+        ))
+        qty_fig.update_layout(
+            title=dict(text='Qty Updated — Breakdown by Category', font=dict(size=14)),
+            plot_bgcolor='white', paper_bgcolor='white',
+            height=max(300, len(qty_breakdown) * 55 + 80),
+            showlegend=False,
+            margin=dict(t=60, b=10, l=10, r=80),
+            font=dict(family='Segoe UI, sans-serif', size=12),
+        )
+        qty_fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0', zeroline=False)
+        qty_fig.update_yaxes(showgrid=False)
+        drilldown_section = dbc.Card(
+            dbc.CardBody(dcc.Graph(figure=qty_fig, config={'displayModeBar': False})),
             className='shadow-sm',
         )
 
